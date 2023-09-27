@@ -4,7 +4,7 @@ import { mustHaveChangeOutput } from './script';
 import { sortedTaprootTree, taprootWitnessProgram } from './taproot';
 
 export type Stakeholder = {
-  tapscript: Buffer;
+  leaves: bip341.TaprootLeaf[];
   amount: number;
 };
 
@@ -25,10 +25,7 @@ export function sharedCoinTree(
   internalPubKey = X_H_POINT
 ): bip341.HashTree {
   if (stakeholders.length === 1) {
-    const leaf = {
-      scriptHex: stakeholders[0].tapscript.toString('hex'),
-    };
-    return bip341.toHashTree([leaf], true);
+    return bip341.toHashTree(stakeholders[0].leaves, true);
   }
 
   if (stakeholders.length > 1) {
@@ -50,27 +47,13 @@ export function sharedCoinTree(
         changeTree.hash
       );
 
-      console.info(
-        'changeWitnessProgram',
-        changeWitnessProgram.toString('hex')
+      const leafModifier = withOutputCheck(
+        0,
+        changeWitnessProgram,
+        sharedAmount - stakeholder.amount
       );
 
-      const scriptStack = script.decompile(stakeholder.tapscript);
-      const leafScript = script.compile([
-        // add a "script prefix" to the stakeholder tapscript forcing him to add output #0 with
-        //   - scriptPubKey = segwit v1 + changeWitnessProgram
-        //   - amount = sharedAmount - stakeholder.amount (the "new" shared amount after the stakeholder has spent his part)
-        ...mustHaveChangeOutput(
-          0,
-          changeWitnessProgram,
-          sharedAmount - stakeholder.amount
-        ),
-        ...scriptStack,
-      ]);
-
-      leaves.push({
-        scriptHex: leafScript.toString('hex'),
-      });
+      leaves.push(...stakeholder.leaves.map(leafModifier));
     }
 
     return sortedTaprootTree(leaves);
@@ -103,4 +86,20 @@ export function findLeafIncludingScript(
   }
 
   return undefined;
+}
+
+function withOutputCheck(
+  ...args: Parameters<typeof mustHaveChangeOutput>
+): (leaf: bip341.TaprootLeaf) => bip341.TaprootLeaf {
+  // add a "script prefix" to the stakeholder tapscript forcing him to add output #0 with
+  //   - scriptPubKey = segwit v1 + changeWitnessProgram
+  //   - amount = sharedAmount - stakeholder.amount (the "new" shared amount after the stakeholder has spent his part)
+  const outputInspector = mustHaveChangeOutput(...args);
+  return (leaf) => {
+    const scriptStack = script.decompile(Buffer.from(leaf.scriptHex, 'hex'));
+    const newScript = script.compile([...outputInspector, ...scriptStack]);
+    return {
+      scriptHex: newScript.toString('hex'),
+    };
+  };
 }

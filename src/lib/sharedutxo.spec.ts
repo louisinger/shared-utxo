@@ -88,12 +88,16 @@ const checksig = (xOnlyPubKey: Buffer) => {
 // Alice will put 1 LBTC and Bob 0.5 LBTC. Bob pays the miner fees.
 test('shared utxo e2e test', async (t) => {
   const aliceStakeholder: Stakeholder = {
-    tapscript: checksig(alice.publicKey.subarray(1)),
+    leaves: [
+      { scriptHex: checksig(alice.publicKey.subarray(1)).toString('hex') },
+    ],
     amount: 1_0000_0000,
   };
 
   const bobStakeholder: Stakeholder = {
-    tapscript: checksig(bob.publicKey.subarray(1)),
+    leaves: [
+      { scriptHex: checksig(bob.publicKey.subarray(1)).toString('hex') },
+    ],
     amount: 1_0000_0000 / 2,
   };
 
@@ -169,7 +173,7 @@ test('shared utxo e2e test', async (t) => {
 
   const aliceLeaf = findLeafIncludingScript(
     aliceBobTree,
-    aliceStakeholder.tapscript.toString('hex')
+    aliceStakeholder.leaves[0].scriptHex
   );
   t.not(aliceLeaf, undefined);
   const aliceLeafHash = bip341LIB.tapLeafHash(aliceLeaf);
@@ -227,11 +231,92 @@ test('shared utxo e2e test', async (t) => {
   aliceFinalizer.finalize();
 
   const aliceTx = Extractor.extract(aliceFinalizer.pset);
-  console.info('alice tx: ', aliceTx.toHex());
+  console.log('\n');
+  console.info('alice redeem: ', aliceTx.toHex());
   console.log('\n');
 
   const aliceTxID = await broadcast(aliceTx.toHex());
-  console.info('next shared coin: ', { txID: aliceTxID, vout: 0 });
+
+  // bob can spend the new shared coin without any cooperation from alice
+
+  // first it needs to find the new script tree, as there is only 2 stakeholders here, it's easy
+  const bobTree = sharedCoinTree([bobStakeholder]);
+  const bobLeaf = findLeafIncludingScript(
+    bobTree,
+    bobStakeholder.leaves[0].scriptHex
+  );
+  const path = bip341LIB.findScriptPath(
+    bobTree,
+    bip341LIB.tapLeafHash(bobLeaf)
+  );
+  const [bobScript, bobControlBlock] = bip341.taprootSignScriptStack(
+    H_POINT,
+    bobLeaf,
+    bobTree.hash,
+    path
+  );
+
+  const bobPset = Creator.newPset({
+    outputs: [
+      new CreatorOutput(
+        LBTC,
+        bobStakeholder.amount - minerFeeAmount,
+        bobP2WPKH.output
+      ),
+      new CreatorOutput(LBTC, minerFeeAmount),
+    ],
+  });
+
+  const bobUpdater = new Updater(bobPset);
+  bobUpdater.addInputs([
+    {
+      txid: aliceTxID,
+      txIndex: 0,
+      witnessUtxo: aliceTx.outs[0],
+      sighashType: Transaction.SIGHASH_DEFAULT,
+      tapInternalKey: H_POINT.subarray(1),
+      tapLeafScript: {
+        controlBlock: bobControlBlock,
+        script: bobScript,
+        leafVersion: bip341LIB.LEAF_VERSION_TAPSCRIPT,
+      },
+    },
+  ]);
+
+  const bobPreimage = bobUpdater.pset.getInputPreimage(
+    0,
+    Transaction.SIGHASH_DEFAULT,
+    networks.regtest.genesisBlockHash,
+    bip341LIB.tapLeafHash(bobLeaf)
+  );
+
+  const bobSignature = Buffer.from(
+    ecc.signSchnorr(bobPreimage, bob.privateKey, Buffer.alloc(32))
+  );
+
+  const bobSignatureData: BIP371SigningData = {
+    genesisBlockHash: networks.regtest.genesisBlockHash,
+    tapScriptSigs: [
+      {
+        leafHash: bip341LIB.tapLeafHash(bobLeaf),
+        pubkey: bob.publicKey.subarray(1),
+        signature: bobSignature,
+      },
+    ],
+  };
+
+  const bobSigner = new Signer(bobUpdater.pset);
+  bobSigner.addSignature(0, bobSignatureData, Pset.SchnorrSigValidator(ecc));
+
+  const bobFinalizer = new Finalizer(bobSigner.pset);
+  bobFinalizer.finalize();
+
+  const bobTx = Extractor.extract(bobFinalizer.pset);
+  console.info('bob redeem: ', bobTx.toHex());
+  console.log('\n');
+
+  await broadcast(bobTx.toHex());
+  console.info('all the stakeholders has redeemed the shared coin');
 
   t.pass();
 });
