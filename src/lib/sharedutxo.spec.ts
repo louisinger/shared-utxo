@@ -19,6 +19,7 @@ import { OPS } from 'liquidjs-lib/src/ops';
 import * as ecc from 'tiny-secp256k1';
 
 import { broadcast, faucet, fetchTx, signTransaction } from './_regtest.spec';
+import { extractSharedUtxo } from './script';
 import {
   findLeafIncludingScript,
   sharedCoinTree,
@@ -155,9 +156,21 @@ test('shared utxo e2e test', async (t) => {
 
   // Alice wants to spend her part of the coin, going back to its original P2WPKH address.
   // To do this, she is forced by the covenant to push an additional change output with the bob coins as value.
+  const aliceLeaf = findLeafIncludingScript(
+    aliceBobTree,
+    aliceStakeholder.leaves[0].scriptHex
+  );
 
-  const bobOnlyTree = sharedCoinTree([bobStakeholder]); // the change must go to shared coin covenant without alice!
-  const changeScriptPubKey = bip341.taprootOutputScript(H_POINT, bobOnlyTree);
+  const { taprootWitnessProgram, amount, outputIndex } = extractSharedUtxo(
+    Buffer.from(aliceLeaf.scriptHex, 'hex')
+  );
+  t.is(amount, bobStakeholder.amount);
+  t.is(outputIndex, 0);
+
+  const changeScriptPubKey = Buffer.concat([
+    Buffer.from([0x51, 0x20]),
+    taprootWitnessProgram,
+  ]);
 
   const alicePset = Creator.newPset({
     outputs: [
@@ -171,10 +184,6 @@ test('shared utxo e2e test', async (t) => {
     ],
   });
 
-  const aliceLeaf = findLeafIncludingScript(
-    aliceBobTree,
-    aliceStakeholder.leaves[0].scriptHex
-  );
   t.not(aliceLeaf, undefined);
   const aliceLeafHash = bip341LIB.tapLeafHash(aliceLeaf);
   const pathToAlice = bip341LIB.findScriptPath(aliceBobTree, aliceLeafHash);
