@@ -17,15 +17,17 @@ const X_H_POINT = Buffer.from(
 /**
  * Given a list of stakeholders, it creates a dynamic shared coin taproot tree.
  * @param stakeholders - the list of stakeholders owning the coin
+ * @param commonLeaves - the list of leaves that are common to all stakeholders (default: empty), because all share it no need to control the change output
  * @param internalPubKey - the internal pubkey used to create the tree (default: unspendable x-only pubkey)
  * @returns - bip341.HashTree with script hex
  */
 export function sharedCoinTree(
   stakeholders: Stakeholder[],
+  commonLeaves: bip341.TaprootLeaf[] = [],
   internalPubKey = X_H_POINT
 ): bip341.HashTree {
   if (stakeholders.length === 1) {
-    return bip341.toHashTree(stakeholders[0].leaves, true);
+    return bip341.toHashTree(stakeholders[0].leaves.concat(commonLeaves), true);
   }
 
   if (stakeholders.length > 1) {
@@ -39,6 +41,7 @@ export function sharedCoinTree(
 
       const changeTree = sharedCoinTree(
         stakeHoldersWithoutCurrent,
+        commonLeaves,
         internalPubKey
       );
 
@@ -53,7 +56,7 @@ export function sharedCoinTree(
         sharedAmount - stakeholder.amount
       );
 
-      leaves.push(...stakeholder.leaves.map(leafModifier));
+      leaves.push(...stakeholder.leaves.map(leafModifier).concat(commonLeaves));
     }
 
     return sortedTaprootTree(leaves);
